@@ -1,0 +1,76 @@
+# Multi-stage Dockerfile for BHN Frontend
+FROM node:18-alpine AS base
+
+# Install system dependencies
+RUN apk add --no-cache \
+    dumb-init \
+    curl
+
+# Create app directory
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Development stage
+FROM base AS development
+ENV NODE_ENV=development
+RUN npm install
+COPY . .
+EXPOSE 3000
+CMD ["dumb-init", "npm", "start"]
+
+# Build stage
+FROM base AS build
+
+# Set build environment
+ENV NODE_ENV=production
+ARG REACT_APP_API_URL=http://localhost:3001
+ARG REACT_APP_ENV=production
+
+# Install dependencies
+RUN npm ci --silent
+
+# Copy source code
+COPY . .
+
+# Build the application
+RUN npm run build
+
+# Production stage with Nginx
+FROM nginx:alpine AS production
+
+# Install curl for health checks
+RUN apk add --no-cache curl
+
+# Copy custom nginx configuration
+COPY nginx/nginx.conf /etc/nginx/nginx.conf
+
+# Copy built application
+COPY --from=build /app/build /usr/share/nginx/html
+
+# Copy additional static files
+COPY --from=build /app/public/logo.png /usr/share/nginx/html/
+COPY --from=build /app/public/*.jpg /usr/share/nginx/html/
+COPY --from=build /app/public/*.png /usr/share/nginx/html/
+
+# Create nginx user and set permissions
+RUN addgroup -g 1001 -S nginx_app && \
+    adduser -S nginx_app -u 1001 && \
+    chown -R nginx_app:nginx_app /usr/share/nginx/html && \
+    chown -R nginx_app:nginx_app /var/cache/nginx && \
+    chown -R nginx_app:nginx_app /var/log/nginx && \
+    chown -R nginx_app:nginx_app /etc/nginx/conf.d
+
+# Switch to non-root user
+USER nginx_app
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost || exit 1
+
+# Expose port
+EXPOSE 80
+
+# Start nginx
+CMD ["nginx", "-g", "daemon off;"]
